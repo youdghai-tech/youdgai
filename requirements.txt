@@ -1,0 +1,6 @@
+aiogram
+aiohttp
+edge-tts
+opencv-python-headless
+numpy
+Pillow
