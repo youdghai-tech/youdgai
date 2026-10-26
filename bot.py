@@ -5,9 +5,9 @@ import re
 import subprocess
 import cv2
 import numpy as np
-
 import aiohttp
 import edge_tts
+
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.types import (
@@ -20,32 +20,44 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiohttp import web
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 
-# Токен берем из переменных окружения или вставляем вручную
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8982219315:AAEOfDYPXue_WjtKMs6XDNlH1LGVqL6vWTc")
+# --- НАСТРОЙКИ ---
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8818921887:AAGpDXUfd_I_wMuDL-p6vC9TD4wupkkOWh4")
 CHANNEL_URL = "https://t.me/airasleshenia"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# Хранилище настроек пользователей (в памяти)
+# Конфигурация голосов edge-tts + параметры тона/скорости
+VOICES_CONFIG = {
+    "dmitry": {
+        "name": "Игорь (Мужской)",
+        "voice": "ru-RU-DmitryNeural",
+        "ffmpeg_af": None
+    },
+    "anya": {
+        "name": "Аня (Женский)",
+        "voice": "ru-RU-SvetlanaNeural",
+        # Чуть приподнимаем тон для Ани, чтобы сделать голос более мягким и живым
+        "ffmpeg_af": "asetrate=48000*1.08,atempo=1/1.08"
+    },
+    "max": {
+        "name": "Макс (Мужской брутальный)",
+        "voice": "ru-RU-DmitryNeural",
+        # Чуть занижаем тон для Макса, чтобы голос звучал ниже и солиднее
+        "ffmpeg_af": "asetrate=48000*0.92,atempo=1/0.92"
+    }
+}
+
+# Хранилище настроек пользователей
 mat_mode = {}  
 user_speed = {}  
-user_voice = {} 
 user_kek_lvl = {}  
 user_kek_vol = {}  
 user_vid_speed = {}
 user_vid_vol = {}
-
-# Доступные голоса
-VOICES = {
-    "dmitry": ("Дмитрий (Классический 👨)", "ru-RU-DmitryNeural"),
-    "svetlana": ("Светлана (Классическая 👩)", "ru-RU-SvetlanaNeural"),
-    "andrew": ("Макс (Мультиязычный 👨)", "en-US-AndrewMultilingualNeural"),
-    "ava": ("Аня (Мультиязычный 👩)", "en-US-AvaMultilingualNeural"),
-}
 
 # --- Вспомогательные функции ---
 def is_mat_enabled(user_id: int) -> bool:
@@ -53,9 +65,6 @@ def is_mat_enabled(user_id: int) -> bool:
 
 def get_user_speed(user_id: int) -> str:
     return user_speed.get(user_id, "+0%")
-
-def get_user_voice(user_id: int) -> str:
-    return user_voice.get(user_id, "ru-RU-DmitryNeural")
 
 def get_kek_lvl(user_id: int) -> int:
     return user_kek_lvl.get(user_id, 3) 
@@ -75,13 +84,10 @@ class VidSpeedState(StatesGroup):
 class VidVolState(StatesGroup):
     wait_for_video = State()
 
-# --- КЛАВИАТУРЫ ---
+class FitState(StatesGroup):
+    wait_for_media = State()
 
-def get_voice_keyboard():
-    buttons = []
-    for code, (name, voice_id) in VOICES.items():
-        buttons.append([InlineKeyboardButton(text=name, callback_data=f"set_voice:{code}")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+# --- КЛАВИАТУРЫ ---
 
 def get_kek_lvl_keyboard(current: int):
     buttons = []
@@ -121,7 +127,6 @@ def get_settings_keyboard(user_id: int):
     mat_btn_text = "🔞 Маты: ВКЛ" if mat else "🎩 Маты: ВЫКЛ"
     
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎙 Выбрать голос", callback_data="open_voice_menu")],
         [InlineKeyboardButton(text="📉 Шакальность видео", callback_data="open_keklvl_menu")],
         [InlineKeyboardButton(text="🔊 Громкость видео", callback_data="open_kekvol_menu")],
         [InlineKeyboardButton(text=mat_btn_text, callback_data="toggle_mat_mode")]
@@ -156,19 +161,20 @@ async def cmd_help(message: types.Message, state: FSMContext):
 
     help_text = (
         "📖 **Справка по командам:**\n\n"
-        "🤪 **Жмых и Шакалы:**\n"
-        "• `/shih` — Жмыхнуть фото (можно ответом на фото)\n"
-        "• `/kek` — Испортить видео (можно ответом на видео)\n"
-        "• `/fry` — Перегрузить аудио/голосовое (ответом на аудио)\n"
+        "🗣 **Быстрая озвучка по командам:**\n"
+        "• `/dmitry <текст>` — Игорь (Мужской)\n"
+        "• `/anya <текст>` — Аня (Женский)\n"
+        "• `/max <текст>` — Макс (Брутальный)\n\n"
+        "🤪 **Медиа-обработка:**\n"
+        "• `/fit` — Подогнать фото/видео под все экраны (9:16)\n"
+        "• `/shih` — Жмыхнуть фото\n"
+        "• `/kek` — Испортить видео\n"
         "• `/vidspeed` — Изменить скорость видео\n"
-        "• `/vidvol` — Изменить громкость видео\n\n"
-        "🎙 **Озвучка:**\n"
-        "• `/say <текст>` — Озвучить текст (или ответом на текст)\n"
-        "• `/voice` — Меню выбора голоса\n"
-        "• `/speed <+-X%>` — Настроить скорость (например: `/speed +20%`)\n\n"
+        "• `/vidvol` — Изменить громкость видео\n"
+        "• `/fry` — Перегрузить аудио\n\n"
         "⚙️ **Параметры:**\n"
-        "• `/settings` — Панель всех настроек бота\n"
-        "• `/cancel` — Отменить выбор"
+        "• `/settings` — Панель настроек\n"
+        "• `/cancel` — Отменить текущее действие"
     )
 
     prefix = "Забыл команды? На, смотри 👇\n\n" if mat else "Вот список доступных команд 👇\n\n"
@@ -192,23 +198,8 @@ async def cmd_startmat(message: types.Message):
     await message.answer("⚠️ **Режим 18+ включен!** Погнали! 😈")
 
 # =============================================================
-# ⚙️ ОБРАБОТКА ИНТЕРАКТИВНЫХ МЕНЮ (CALLBACKS)
+# ⚙️ ОБРАБОТКА CALLBACKS
 # =============================================================
-
-@dp.callback_query(F.data == "open_voice_menu")
-async def cb_open_voice_menu(call: CallbackQuery):
-    await call.message.edit_text("🎙 **Выберите голос для озвучки:**", reply_markup=get_voice_keyboard(), parse_mode="Markdown")
-    await call.answer()
-
-@dp.callback_query(F.data.startswith("set_voice:"))
-async def cb_set_voice(call: CallbackQuery):
-    user_id = call.from_user.id
-    code = call.data.split(":")[1]
-    if code in VOICES:
-        user_voice[user_id] = VOICES[code][1]
-        name = VOICES[code][0]
-        await call.message.edit_text(f"✅ Голос установлен: **{name}**", parse_mode="Markdown")
-    await call.answer()
 
 @dp.callback_query(F.data == "open_keklvl_menu")
 async def cb_open_keklvl(call: CallbackQuery):
@@ -248,39 +239,172 @@ async def cb_toggle_mat(call: CallbackQuery):
     await call.answer("Режим мата изменен!")
 
 # =============================================================
-# 🎙 ГОЛОС И СКОРОСТЬ (ТЕКСТОВЫЕ КОМАНДЫ)
+# 🗣 БЫСТРАЯ ОЗВУЧКА (/dmitry, /anya, /max)
 # =============================================================
 
-@dp.message(Command("voice"))
-async def cmd_voice(message: types.Message):
-    await message.answer("🎙 **Выберите желаемый голос:**", reply_markup=get_voice_keyboard(), parse_mode="Markdown")
-
-@dp.message(Command("speed"))
-async def cmd_speed(message: types.Message):
+async def process_tts_generation(message: types.Message, voice_key: str):
     user_id = message.from_user.id
     args = message.text.split(maxsplit=1)
 
-    if len(args) < 2:
-        current = get_user_speed(user_id)
-        await message.reply(f"⚙️ **Текущая скорость:** `{current}`\nУкажите значение: `/speed +20%` или `/speed -15%`", parse_mode="Markdown")
+    text_to_speak = ""
+    if len(args) >= 2:
+        text_to_speak = args[1]
+    elif message.reply_to_message and message.reply_to_message.text:
+        text_to_speak = message.reply_to_message.text
+    else:
+        await message.reply(f"⚠️ Напиши текст после команды, например:\n`/{voice_key} Привет, мир!`\nИли ответь этой командой на чужой текст.", parse_mode="Markdown")
         return
 
-    val = args[1].strip()
-    if not val.endswith("%"): val += "%"
-    if not val.startswith("+") and not val.startswith("-"): val = "+" + val
+    v_conf = VOICES_CONFIG[voice_key]
+    user_sp = get_user_speed(user_id)
+    
+    mp3_path = f"tts_{user_id}_{message.message_id}.mp3"
+    ogg_path = f"tts_{user_id}_{message.message_id}.ogg"
 
-    match = re.match(r"^([+-]\d+)%$", val)
-    if not match:
-        await message.reply("Пример корректного ввода: `/speed +15%`")
+    await bot.send_chat_action(chat_id=message.chat.id, action="record_voice")
+
+    try:
+        communicate = edge_tts.Communicate(text_to_speak, voice=v_conf["voice"], rate=user_sp)
+        await communicate.save(mp3_path)
+
+        af_filters = []
+        if v_conf["ffmpeg_af"]:
+            af_filters.append(v_conf["ffmpeg_af"])
+
+        af_string = ",".join(af_filters) if af_filters else "anull"
+
+        process = subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", mp3_path, 
+                "-af", af_string,
+                "-c:a", "libopus", "-b:a", "32k", "-ar", "48000", "-ac", "1", "-vn", ogg_path
+            ],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        
+        if process.returncode != 0:
+            raise Exception("Ошибка конвертации FFmpeg")
+
+        await message.reply_voice(FSInputFile(ogg_path))
+
+    except Exception as e:
+        logging.error(f"TTS Error: {e}")
+        await message.reply("Не удалось озвучить текст.")
+    finally:
+        for path in (mp3_path, ogg_path):
+            if os.path.exists(path): os.remove(path)
+
+@dp.message(Command("dmitry"))
+async def cmd_dmitry(message: types.Message):
+    await process_tts_generation(message, "dmitry")
+
+@dp.message(Command("anya"))
+async def cmd_anya(message: types.Message):
+    await process_tts_generation(message, "anya")
+
+@dp.message(Command("max"))
+async def cmd_max(message: types.Message):
+    await process_tts_generation(message, "max")
+
+# =============================================================
+# 📱 ПОДГОН ПОД ВСЕ ЭКРАНЫ (/fit)
+# =============================================================
+
+async def process_fit_photo(message: types.Message, photo: types.PhotoSize):
+    user_id = message.from_user.id
+    msg = await message.reply("⏳ Подгоняю фото под все экраны... Жди!")
+    
+    input_path = f"input_fit_{user_id}_{message.message_id}.jpg"
+    output_path = f"output_fit_{user_id}_{message.message_id}.jpg"
+    
+    try:
+        file_info = await bot.get_file(photo.file_id)
+        await bot.download_file(file_info.file_path, destination=input_path)
+        
+        img = Image.open(input_path).convert("RGB")
+        target_w, target_h = 1080, 1920
+        
+        background = Image.new("RGB", (target_w, target_h), (15, 15, 15))
+        img.thumbnail((target_w, target_h), Image.Resampling.LANCZOS)
+        
+        paste_x = (target_w - img.width) // 2
+        paste_y = (target_h - img.height) // 2
+        background.paste(img, (paste_x, paste_y))
+        
+        background.save(output_path, "JPEG", quality=90)
+        
+        await bot.send_chat_action(chat_id=message.chat.id, action="upload_photo")
+        await message.reply_photo(FSInputFile(output_path), caption="📱 Готово! Теперь фото поддерживается на всех экранах.")
+    except Exception as e:
+        logging.error(f"Ошибка fit фото: {e}")
+        await message.reply("Не удалось обработать картинку.")
+    finally:
+        await msg.delete()
+        if os.path.exists(input_path): os.remove(input_path)
+        if os.path.exists(output_path): os.remove(output_path)
+
+async def process_fit_video(message: types.Message, video: types.Video):
+    user_id = message.from_user.id
+    if video.file_size > 20 * 1024 * 1024:
+        await message.reply("Файл слишком большой! Лимит 20 МБ.")
         return
 
-    num = int(match.group(1))
-    if num < -50 or num > 100:
-        await message.reply("Допустимый диапазон: от -50% до +100%.")
-        return
+    msg = await message.reply("⏳ Подгоняю видео под все экраны (9:16)... Жди!")
+    input_path = f"input_fit_vid_{user_id}_{message.message_id}.mp4"
+    output_path = f"output_fit_vid_{user_id}_{message.message_id}.mp4"
+    
+    try:
+        file_info = await bot.get_file(video.file_id)
+        await bot.download_file(file_info.file_path, destination=input_path)
+        
+        command = [
+            "ffmpeg", "-y", "-i", input_path,
+            "-vf", "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black",
+            "-c:a", "aac", "-b:a", "128k",
+            output_path
+        ]
+        
+        process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if process.returncode != 0:
+            raise Exception("Ошибка FFmpeg fit video")
 
-    user_speed[user_id] = f"{num:+d}%"
-    await message.reply(f"👌 Скорость речи установлена на `{user_speed[user_id]}`!")
+        await bot.send_chat_action(chat_id=message.chat.id, action="upload_video")
+        await message.reply_video(FSInputFile(output_path), caption="📱 Видео адаптировано под все экраны!")
+    except Exception as e:
+        logging.error(f"Ошибка fit видео: {e}")
+        await message.reply("Не удалось обработать видео.")
+    finally:
+        await msg.delete()
+        if os.path.exists(input_path): os.remove(input_path)
+        if os.path.exists(output_path): os.remove(output_path)
+
+@dp.message(Command("fit", "screen"))
+async def cmd_fit_start(message: types.Message, state: FSMContext):
+    if message.reply_to_message:
+        if message.reply_to_message.photo:
+            await process_fit_photo(message, message.reply_to_message.photo[-1])
+            return
+        elif message.reply_to_message.video:
+            await process_fit_video(message, message.reply_to_message.video)
+            return
+
+    await state.set_state(FitState.wait_for_media)
+    await message.reply("📱 **Отправь мне фото или видео**, которое нужно адаптировать под все экраны!\n\nДля отмены напиши /cancel", parse_mode="Markdown")
+
+@dp.message(Command("cancel"), FitState.wait_for_media)
+async def cmd_cancel_fit(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.reply("✅ Действие отменено.")
+
+@dp.message(FitState.wait_for_media, F.photo)
+async def handle_fit_photo_state(message: types.Message, state: FSMContext):
+    await state.clear()
+    await process_fit_photo(message, message.photo[-1])
+
+@dp.message(FitState.wait_for_media, F.video)
+async def handle_fit_video_state(message: types.Message, state: FSMContext):
+    await state.clear()
+    await process_fit_video(message, message.video)
 
 # =============================================================
 # 🥴 ЖМЫХ КАРТИНКИ (/shih)
@@ -289,7 +413,6 @@ async def cmd_speed(message: types.Message):
 async def process_shih_photo(message: types.Message, photo: types.PhotoSize):
     user_id = message.from_user.id
     mat = is_mat_enabled(user_id)
-    
     msg = await message.reply("⏳ Искривляю пространство и жмыхаю... Жди!")
     
     input_path = f"input_shih_{user_id}_{message.message_id}.jpg"
@@ -347,21 +470,14 @@ async def process_shih_photo(message: types.Message, photo: types.PhotoSize):
         if os.path.exists(input_path): os.remove(input_path)
         if os.path.exists(output_path): os.remove(output_path)
 
-
 @dp.message(Command("shih", "zhmyh"))
 async def cmd_shih_start(message: types.Message, state: FSMContext):
     if message.reply_to_message and message.reply_to_message.photo:
         await process_shih_photo(message, message.reply_to_message.photo[-1])
         return
 
-    user_id = message.from_user.id
-    mat = is_mat_enabled(user_id)
-    
     await state.set_state(ShihState.wait_for_photo)
-    await message.reply(
-        "🖼 **Отправь мне картинку**, которую хочешь исказить!\n\nДля отмены напиши /cancel",
-        parse_mode="Markdown"
-    )
+    await message.reply("🖼 **Отправь мне картинку**, которую хочешь исказить!\n\nДля отмены напиши /cancel", parse_mode="Markdown")
 
 @dp.message(Command("cancel"), ShihState.wait_for_photo)
 async def cmd_cancel_shih(message: types.Message, state: FSMContext):
@@ -386,7 +502,6 @@ async def process_kek_video(message: types.Message, video: types.Video):
         return
 
     msg = await message.reply("⏳ Начинаю шакалить качество... Жди!")
-    
     input_path = f"input_{user_id}_{message.message_id}.mp4"
     output_path = f"output_{user_id}_{message.message_id}.mp4"
     
@@ -419,7 +534,6 @@ async def process_kek_video(message: types.Message, video: types.Video):
         ]
         
         process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        
         if process.returncode != 0:
             raise Exception("Ошибка сжатия видео")
 
@@ -458,7 +572,7 @@ async def handle_kek_video_state(message: types.Message, state: FSMContext):
     await process_kek_video(message, message.video)
 
 # =============================================================
-# ⏩ СКОРОСТЬ ВИДЕО (/vidspeed)
+# ⏩ СКОРОСТЬ И 🔊 ГРОМКОСТЬ ВИДЕО (/vidspeed, /vidvol)
 # =============================================================
 
 @dp.message(Command("vidspeed", "speedvid"))
@@ -470,11 +584,7 @@ async def cmd_vidspeed_start(message: types.Message, state: FSMContext):
         await state.update_data(video_file_id=message.reply_to_message.video.file_id)
 
     keyboard = get_vid_speed_keyboard(current)
-    await message.reply(
-        "⏩ **Выбери скорость для видео:**\n(Если не ответил на видео, выбери скорость, а затем отправь видео)",
-        reply_markup=keyboard,
-        parse_mode="Markdown"
-    )
+    await message.reply("⏩ **Выбери скорость для видео:**", reply_markup=keyboard, parse_mode="Markdown")
     await state.set_state(VidSpeedState.wait_for_video)
 
 @dp.callback_query(F.data.startswith("vidspeed:"))
@@ -482,105 +592,8 @@ async def cb_set_vidspeed(call: CallbackQuery, state: FSMContext):
     speed_val = float(call.data.split(":")[1])
     user_id = call.from_user.id
     user_vid_speed[user_id] = speed_val
-    
-    data = await state.get_data()
-    video_file_id = data.get("video_file_id")
-
-    if not video_file_id and call.message.reply_to_message and call.message.reply_to_message.video:
-        video_file_id = call.message.reply_to_message.video.file_id
-
-    if not video_file_id:
-        await call.message.edit_text(
-            f"✅ Скорость установлена на **{speed_val}x**.\n\nТеперь отправь видео или ответь командой `/vidspeed` прямо на нужное видео!",
-            parse_mode="Markdown"
-        )
-        await call.answer()
-        return
-
-    await call.message.edit_text(f"⏳ Меняю скорость видео на {speed_val}x... Жди!")
-    
-    input_path = f"input_vidspeed_{user_id}.mp4"
-    output_path = f"output_vidspeed_{user_id}.mp4"
-
-    try:
-        file_info = await bot.get_file(video_file_id)
-        await bot.download_file(file_info.file_path, destination=input_path)
-
-        v_pts = 1.0 / speed_val
-        if speed_val == 0.5:
-            a_filter = "atempo=0.5"
-        elif speed_val == 1.5:
-            a_filter = "atempo=1.5"
-        elif speed_val == 2.0:
-            a_filter = "atempo=2.0"
-        else:
-            a_filter = "atempo=1.0"
-
-        command = [
-            "ffmpeg", "-y", "-i", input_path,
-            "-filter:v", f"setpts={v_pts}*PTS",
-            "-filter:a", a_filter,
-            output_path
-        ]
-
-        process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if process.returncode != 0:
-            raise Exception("Ошибка обработки видео через ffmpeg")
-
-        video_file = FSInputFile(output_path)
-        await call.message.delete()
-        await call.message.answer_video(video_file, caption=f"🚀 Скорость видео: {speed_val}x")
-        await state.clear()
-
-    except Exception as e:
-        logging.error(f"Ошибка скорости видео: {e}")
-        await call.message.edit_text("❌ Не удалось изменить скорость видео.")
-    finally:
-        if os.path.exists(input_path): os.remove(input_path)
-        if os.path.exists(output_path): os.remove(output_path)
-
+    await call.message.edit_text(f"✅ Скорость установлена на **{speed_val}x**.")
     await call.answer()
-
-@dp.message(VidSpeedState.wait_for_video, F.video)
-async def handle_vidspeed_video_state(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    speed_val = user_vid_speed.get(user_id, 1.0)
-
-    msg = await message.reply(f"⏳ Меняю скорость видео на {speed_val}x... Жди!")
-    input_path = f"input_vidspeed_{user_id}.mp4"
-    output_path = f"output_vidspeed_{user_id}.mp4"
-
-    try:
-        file_info = await bot.get_file(message.video.file_id)
-        await bot.download_file(file_info.file_path, destination=input_path)
-
-        v_pts = 1.0 / speed_val
-        a_filter = "atempo=0.5" if speed_val == 0.5 else ("atempo=1.5" if speed_val == 1.5 else ("atempo=2.0" if speed_val == 2.0 else "atempo=1.0"))
-
-        command = [
-            "ffmpeg", "-y", "-i", input_path,
-            "-filter:v", f"setpts={v_pts}*PTS",
-            "-filter:a", a_filter,
-            output_path
-        ]
-
-        process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if process.returncode != 0:
-            raise Exception("Ошибка ffmpeg")
-
-        await message.reply_video(FSInputFile(output_path), caption=f"🚀 Скорость видео: {speed_val}x")
-        await state.clear()
-    except Exception as e:
-        logging.error(f"Ошибка состояния скорости видео: {e}")
-        await message.reply("❌ Не удалось обработать видео.")
-    finally:
-        await msg.delete()
-        if os.path.exists(input_path): os.remove(input_path)
-        if os.path.exists(output_path): os.remove(output_path)
-
-# =============================================================
-# 🔊 ГРОМКОСТЬ ВИДЕО (/vidvol)
-# =============================================================
 
 @dp.message(Command("vidvol"))
 async def cmd_vidvol_start(message: types.Message, state: FSMContext):
@@ -591,11 +604,7 @@ async def cmd_vidvol_start(message: types.Message, state: FSMContext):
         await state.update_data(video_file_id=message.reply_to_message.video.file_id)
 
     keyboard = get_vid_vol_keyboard(current)
-    await message.reply(
-        "🔊 **Выбери громкость для видео:**\n(Если не ответил на видео, выбери уровень, а затем отправь видео)",
-        reply_markup=keyboard,
-        parse_mode="Markdown"
-    )
+    await message.reply("🔊 **Выбери громкость для видео:**", reply_markup=keyboard, parse_mode="Markdown")
     await state.set_state(VidVolState.wait_for_video)
 
 @dp.callback_query(F.data.startswith("vidvol:"))
@@ -603,88 +612,8 @@ async def cb_set_vidvol(call: CallbackQuery, state: FSMContext):
     vol_val = int(call.data.split(":")[1])
     user_id = call.from_user.id
     user_vid_vol[user_id] = vol_val
-    
-    data = await state.get_data()
-    video_file_id = data.get("video_file_id")
-
-    if not video_file_id and call.message.reply_to_message and call.message.reply_to_message.video:
-        video_file_id = call.message.reply_to_message.video.file_id
-
-    if not video_file_id:
-        await call.message.edit_text(
-            f"✅ Громкость установлена на **x{vol_val}**.\n\nТеперь отправь видео или ответь командой `/vidvol` прямо на нужное видео!",
-            parse_mode="Markdown"
-        )
-        await call.answer()
-        return
-
-    await call.message.edit_text(f"⏳ Меняю громкость видео на x{vol_val}... Жди!")
-    
-    input_path = f"input_vidvol_{user_id}.mp4"
-    output_path = f"output_vidvol_{user_id}.mp4"
-
-    try:
-        file_info = await bot.get_file(video_file_id)
-        await bot.download_file(file_info.file_path, destination=input_path)
-
-        command = [
-            "ffmpeg", "-y", "-i", input_path,
-            "-filter:a", f"volume={vol_val}",
-            "-c:v", "copy",
-            output_path
-        ]
-
-        process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if process.returncode != 0:
-            raise Exception("Ошибка обработки громкости через ffmpeg")
-
-        video_file = FSInputFile(output_path)
-        await call.message.delete()
-        await call.message.answer_video(video_file, caption=f"🔊 Громкость видео: x{vol_val}")
-        await state.clear()
-
-    except Exception as e:
-        logging.error(f"Ошибка громкости видео: {e}")
-        await call.message.edit_text("❌ Не удалось изменить громкость видео.")
-    finally:
-        if os.path.exists(input_path): os.remove(input_path)
-        if os.path.exists(output_path): os.remove(output_path)
-
+    await call.message.edit_text(f"✅ Громкость установлена на **x{vol_val}**.")
     await call.answer()
-
-@dp.message(VidVolState.wait_for_video, F.video)
-async def handle_vidvol_video_state(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    vol_val = user_vid_vol.get(user_id, 1)
-
-    msg = await message.reply(f"⏳ Меняю громкость видео на x{vol_val}... Жди!")
-    input_path = f"input_vidvol_{user_id}.mp4"
-    output_path = f"output_vidvol_{user_id}.mp4"
-
-    try:
-        file_info = await bot.get_file(message.video.file_id)
-        await bot.download_file(file_info.file_path, destination=input_path)
-
-        command = [
-            "ffmpeg", "-y", "-i", input_path,
-            "-filter:a", f"volume={vol_val}",
-            "-c:v", "copy",
-            output_path
-        ]
-
-        process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if process.returncode != 0:
-            raise Exception("Ошибка ffmpeg")
-
-        await message.reply_video(FSInputFile(output_path), caption=f"🔊 Громкость видео: x{vol_val}")
-        await state.clear()
-    except Exception as e:
-        logging.error(f"Ошибка состояния громкости видео: {e}")
-        await message.reply("❌ Не удалось обработать видео.")
-    finally:
-        await msg.delete()
-        if os.path.exists(input_path): os.remove(input_path)
-        if os.path.exists(output_path): os.remove(output_path)
 
 # =============================================================
 # 💥 УШЕРАЗДИРАТЕЛЬ АУДИО (/fry)
@@ -727,69 +656,6 @@ async def cmd_fry_audio(message: types.Message):
         if os.path.exists(output_path): os.remove(output_path)
 
 # =============================================================
-# 🎙 ОЗВУЧКА (/say)
-# =============================================================
-
-@dp.message(Command("say", "tts"))
-async def handle_tts(message: types.Message):
-    user_id = message.from_user.id
-    args = message.text.split(maxsplit=1)
-
-    text_to_speak = ""
-    if len(args) >= 2:
-        text_to_speak = args[1]
-    elif message.reply_to_message and message.reply_to_message.text:
-        text_to_speak = message.reply_to_message.text
-    else:
-        await message.reply("Напиши текст: `/say Привет` или ответь этой командой на текст!", parse_mode="Markdown")
-        return
-
-    speed = get_user_speed(user_id)
-    voice = get_user_voice(user_id)
-    
-    mp3_path = f"tts_{user_id}_{message.message_id}.mp3"
-    ogg_path = f"tts_{user_id}_{message.message_id}.ogg"
-
-    await bot.send_chat_action(chat_id=message.chat.id, action="record_voice")
-
-    success = False
-    for attempt in range(3):
-        try:
-            communicate = edge_tts.Communicate(text_to_speak, voice=voice, rate=speed)
-            await communicate.save(mp3_path)
-
-            if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 0:
-                success = True
-                break 
-        except Exception:
-            await asyncio.sleep(1) 
-
-    try:
-        if not success:
-            raise Exception("Не удалось получить аудио от EdgeTTS.")
-
-        process = subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", mp3_path, 
-                "-af", "silenceremove=stop_periods=-1:stop_duration=0.1:stop_threshold=-50dB",
-                "-c:a", "libopus", "-b:a", "32k", "-ar", "48000", "-ac", "1", "-vn", ogg_path
-            ],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
-        
-        if process.returncode != 0:
-            raise Exception("Ошибка конвертации в OGG")
-
-        await message.reply_voice(FSInputFile(ogg_path))
-
-    except Exception as e:
-        logging.error(f"TTS Error: {e}")
-        await message.reply("Ошибка сервера озвучки. Попробуйте еще раз.")
-    finally:
-        for path in (mp3_path, ogg_path):
-            if os.path.exists(path): os.remove(path)
-
-# =============================================================
 # 💬 ОБРАБОТКА ОБЫЧНОГО ТЕКСТА
 # =============================================================
 
@@ -809,15 +675,16 @@ async def set_main_menu(bot: Bot):
     await bot.set_my_commands([
         BotCommand(command="start", description="Запустить бота"),
         BotCommand(command="help", description="Список всех команд и помощь"),
-        BotCommand(command="settings", description="Панель настроек"),
+        BotCommand(command="dmitry", description="Голос Игорь"),
+        BotCommand(command="anya", description="Голос Аня"),
+        BotCommand(command="max", description="Голос Макс"),
+        BotCommand(command="fit", description="Подогнать под все экраны (9:16)"),
         BotCommand(command="shih", description="Жмыхнуть картинку"),
         BotCommand(command="kek", description="Сделать шакальное видео"),
         BotCommand(command="vidspeed", description="Скорость видео"),
         BotCommand(command="vidvol", description="Громкость видео"),
-        BotCommand(command="fry", description="Перегрузить аудио/голосовое"),
-        BotCommand(command="say", description="Озвучить текст"),
-        BotCommand(command="voice", description="Выбрать голос"),
-        BotCommand(command="speed", description="Скорость речи"),
+        BotCommand(command="fry", description="Перегрузить аудио"),
+        BotCommand(command="settings", description="Панель настроек"),
     ])
 
 async def health_check(request):
