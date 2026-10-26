@@ -23,7 +23,7 @@ from aiohttp import web
 from PIL import Image, ImageEnhance, ImageOps
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8818921887:AAGpDXUfd_I_wMuDL-p6vC9TD4wupkkOWh4")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8982219315:AAEOfDYPXue_WjtKMs6XDNlH1LGVqL6vWTc")
 CHANNEL_URL = "https://t.me/airasleshenia"
 
 logging.basicConfig(level=logging.INFO)
