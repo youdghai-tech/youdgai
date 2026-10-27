@@ -1,6 +1,6 @@
-aiogram==3.13.1
+aiogram
+aiohttp
 edge-tts
 opencv-python-headless
 numpy
 Pillow
-aiohttp
