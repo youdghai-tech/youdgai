@@ -13,4 +13,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Команда для запуска
-CMD ["python", "bot.py"]
+CMD ["python", "bot_grid_black.py"]
